@@ -248,69 +248,39 @@ async def health_check():
 
 @app.post("/detect", response_model=AudioDetectionResponse)
 async def detect_audio(request: AudioDetectionRequest, x_api_key: str = Header(None)):
-    """
-    Detect if audio is SPOOF (AI-Generated) or REAL using base64-encoded audio
-    
-    Args:
-        request: AudioDetectionRequest with language, audio_format, and audio_base64_format
-        x_api_key: API key in header (required)
-    
-    Returns:
-        AudioDetectionResponse with classification, confidence, and language
-    """
-    start_time = time.time()
-    
-    # Verify API key
+
     if x_api_key != API_KEY:
         raise HTTPException(status_code=401, detail="Invalid or missing API key")
-    
-    if not request.audio_base64_format:
-        raise HTTPException(status_code=400, detail="audio_base64_format is required")
-    
+
+    if not request.audioBase64:
+        raise HTTPException(status_code=400, detail="audioBase64 is required")
+
     try:
-        # Decode base64 audio
-        audio_bytes = base64.b64decode(request.audio_base64_format)
-        audio_size = len(audio_bytes)
-        
-        if audio_size > MAX_FILE_SIZE:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Audio too large. Max size: {MAX_FILE_SIZE/1024/1024}MB"
-            )
-        
-        # Load audio from bytes
+        audio_bytes = base64.b64decode(request.audioBase64)
+
         audio_data, sr = sf.read(io.BytesIO(audio_bytes))
-        
-        # Convert to mono if stereo
+
         if len(audio_data.shape) > 1:
             audio_data = np.mean(audio_data, axis=1)
-        
-        # Resample to 22050 Hz
+
         target_sr = 22050
         if sr != target_sr:
             audio_data = librosa.resample(audio_data, orig_sr=sr, target_sr=target_sr)
             sr = target_sr
-        
-        # Limit duration to 2 seconds
+
         duration = 2.0
         max_samples = int(duration * sr)
         if len(audio_data) > max_samples:
             audio_data = audio_data[:max_samples]
-        
-        # Extract features
+
         features = extract_advanced_features(audio_data, sr)
         features = features.reshape(1, -1)
-        
-        logger.info(f"Extracted {features.shape[1]} features from {request.audio_format} audio")
-        
-        # Scale features
+
         if scaler is not None:
             features_scaled = scaler.transform(features)
         else:
             features_scaled = features
-            logger.warning("No scaler available - using unscaled features")
-        
-        # Make prediction
+
         if rf_model is not None:
             prediction = rf_model.predict(features_scaled)[0]
             confidence = float(np.max(rf_model.predict_proba(features_scaled)))
@@ -318,26 +288,18 @@ async def detect_audio(request: AudioDetectionRequest, x_api_key: str = Header(N
             prediction = svm_model.predict(features_scaled)[0]
             confidence = float(np.max(svm_model.predict_proba(features_scaled)))
         else:
-            raise HTTPException(status_code=500, detail="No model available for prediction")
-        
-        # Map prediction to classification: 0 = REAL, 1 = SPOOF
+            raise HTTPException(status_code=500, detail="No model available")
+
         classification = "SPOOF" if prediction == 1 else "REAL"
-        
-        processing_time = time.time() - start_time
-        logger.info(f"Classification: {classification}, Confidence: {confidence:.2%}, Time: {processing_time:.2f}s")
-        
-        return AudioDetectionResponse(
-            classification=classification,
-            confidence=confidence,
-            language=request.language
-        )
-    
-    except base64.binascii.Error:
-        logger.error("Invalid base64 encoding")
-        raise HTTPException(status_code=400, detail="Invalid base64 encoded audio")
+
+        return {
+            "classification": classification,
+            "confidence": confidence,
+            "language": request.language
+        }
+
     except Exception as e:
-        logger.error(f"Detection error: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Detection failed: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.exception_handler(Exception)
 async def global_exception_handler(request, exc):
